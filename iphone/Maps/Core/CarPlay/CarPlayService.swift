@@ -30,6 +30,8 @@ final class CarPlayService: NSObject {
     effectiveDisplay != .device
   }
 
+  @objc var isCarPlayRoutingActive: Bool { ownsCarPlayRouting }
+
   private var searchService: CarPlaySearchService?
   private var bookmarkListObserver: CarPlayBookmarkListObserver?
   private var router: CarPlayRouter?
@@ -43,6 +45,7 @@ final class CarPlayService: NSObject {
   // Layout can run while the shared map is moving, before attachedDisplay is updated.
   private var transitioningTo: CarPlayMapDisplay?
   private var routingOwner: RoutingOwner?
+  private var ownsCarPlayRouting: Bool { routingOwner == .carPlay && !MWMRouter.isFollowingTrack() }
   private var isCarPlayRouterSubscribed = false
   private var needsCarPlayRoutingRestore = false
   private var isPhoneSceneConnected = false
@@ -191,6 +194,28 @@ final class CarPlayService: NSObject {
     updateMapPlacement()
   }
 
+  @objc func preservePhoneTrackSession() {
+    guard router != nil else { return }
+    let needsTemplateReset = routingOwner != .device || router?.previewTrip != nil ||
+      !preparedToPreviewTrips.isEmpty || (interfaceController?.templates.count ?? 0) > 1
+    mapState.selectPhone()
+    updateRoutingPresentation(for: .device)
+    router?.previewTrip = nil
+    preparedToPreviewTrips = []
+    needsCarPlayRoutingRestore = false
+    if needsTemplateReset, interfaceController != nil {
+      applyBaseRootTemplate()
+    }
+    updateMapPlacement()
+  }
+
+  @objc func phoneTrackSessionDidEnd() {
+    updateRoutingPresentation(for: effectiveDisplay)
+    restoreCarPlayTemplateUI()
+    // An ended track leaves no road itinerary for CarPlay recovery.
+    needsCarPlayRoutingRestore = false
+  }
+
   func openMainCarPlay() {
     activateMainCarPlay()
     guard let dashboardScene, let url = Constants.openCarPlayURL else { return }
@@ -330,20 +355,27 @@ final class CarPlayService: NSObject {
   }
 
   private func updateRoutingPresentation(for display: CarPlayMapDisplay) {
-    let destination: RoutingOwner = display == .device ? .device : .carPlay
+    let destination: RoutingOwner = display == .device || MWMRouter.isFollowingTrack() ? .device : .carPlay
     guard routingOwner != destination, let router else { return }
 
     switch destination {
     case .device:
+      routingOwner = .device
       let hadCurrentTrip = router.currentTrip != nil
       let hadPreviewTrip = router.previewTrip != nil
+      hideSpeedState()
       router.setRoutingPresentationActive(false)
       router.removeListener(self)
       router.setupInitialSpeedCameraMode()
       MWMRouter.subscribeToEvents()
       router.cancelNavigationSession()
       needsCarPlayRoutingRestore = false
-      if hadCurrentTrip {
+      // Track sessions retain their phone controls when the shared map moves to the car.
+      if MWMRouter.isFollowingTrack() {
+        if MWMRouter.isOnRoute() {
+          MWMRouter.showNavigationMapControls()
+        }
+      } else if hadCurrentTrip {
         MWMRouter.showNavigationMapControls()
       } else if hadPreviewTrip {
         MWMRouter.rebuild(withBestRouter: true)
@@ -371,6 +403,10 @@ final class CarPlayService: NSObject {
 
     mapTemplate.mapDelegate = self
     mapTemplate.tripEstimateStyle = rootTemplateStyle
+    if mapTemplate.isPanningInterfaceVisible {
+      MapTemplateBuilder.configurePanUI(mapTemplate)
+      return
+    }
     if let info = mapTemplate.userInfo as? MapInfo {
       switch info.type {
       case CPConstants.TemplateType.navigation:
@@ -448,6 +484,7 @@ final class CarPlayService: NSObject {
     router.subscribeToEvents()
     isCarPlayRouterSubscribed = true
     self.router = router
+    MWMTextToSpeech.add(self)
     return router
   }
 
@@ -582,6 +619,7 @@ final class CarPlayService: NSObject {
       isCarPlayRouterSubscribed = false
     }
     router.cancelNavigationSession()
+    MWMTextToSpeech.remove(self)
     self.router = nil
     routingOwner = .device
     needsCarPlayRoutingRestore = false
@@ -715,6 +753,10 @@ final class CarPlayService: NSObject {
       isTemplateOperationInProgress = false
       templateCompletion(success, error)
       if success {
+        guard ownsCarPlayRouting, router?.previewTrip === trip else {
+          applyBaseRootTemplate()
+          return
+        }
         restoreCarPlayTemplateUI()
         updatePhoneModeAlert()
         router?.startNavigationSession(forTrip: trip, template: mapTemplate, isRestoring: true)
@@ -769,6 +811,7 @@ final class CarPlayService: NSObject {
   }
 
   func cancelCurrentTrip() {
+    guard !MWMRouter.isFollowingTrack() else { return }
     LOG(.info, "Cancel current trip")
     router?.cancelTrip()
     hideSpeedState()
@@ -798,7 +841,7 @@ final class CarPlayService: NSObject {
   }
 
   private func refreshSpeedStateFromRoutingManager() {
-    guard isOnRoute, let routeInfo = RoutingManager.routingManager.routeInfo else {
+    guard ownsCarPlayRouting, isOnRoute, let routeInfo = RoutingManager.routingManager.routeInfo else {
       speedState.isVisible = false
       return
     }
@@ -964,8 +1007,8 @@ extension CarPlayService: CPInterfaceControllerDelegate {
       return
     }
     if info.type == CPConstants.TemplateType.preview {
-      // The alert only covers the preview: the route now belongs to the phone and must survive.
-      guard !mapState.isPhoneSelected else { return }
+      // A phone-owned replacement must survive teardown of an older car preview.
+      guard !mapState.isPhoneSelected, !MWMRouter.isFollowingTrack() else { return }
       router?.completeRouteAndRemovePoints()
     }
   }
@@ -1040,6 +1083,7 @@ extension CarPlayService: CPMapTemplateDelegate {
   }
 
   func mapTemplate(_ mapTemplate: CPMapTemplate, startedTrip trip: CPTrip, using routeChoice: CPRouteChoice) {
+    guard ownsCarPlayRouting, router?.previewTrip === trip else { return }
     guard let info = routeChoice.userInfo as? RouteInfo else {
       if let info = routeChoice.userInfo as? [String: Any],
          let code = info[CPConstants.Trip.errorCode] as? RouterResultCode,
@@ -1088,6 +1132,7 @@ extension CarPlayService: CPMapTemplateDelegate {
   func mapTemplate(_ mapTemplate: CPMapTemplate,
                    selectedPreviewFor trip: CPTrip,
                    using routeChoice: CPRouteChoice) {
+    guard ownsCarPlayRouting, interfaceController?.topTemplate === mapTemplate else { return }
     guard let previewTrip = router?.previewTrip, previewTrip == trip else {
       applyUndefinedEstimates(template: mapTemplate, trip: trip)
       router?.buildRoute(trip: trip)
@@ -1193,8 +1238,31 @@ extension CarPlayService: CarPlayRouterListener {
 extension CarPlayService: LocationModeListener {
   func processMyPositionStateModeEvent(_ mode: MWMMyPositionMode) {
     guard let rootMapTemplate else { return }
+    if rootMapTemplate.isPanningInterfaceVisible {
+      MapTemplateBuilder.configurePanUI(rootMapTemplate)
+      return
+    }
     MapTemplateBuilder.setupMapButtons(rootMapTemplate, positionMode: mode)
     MapTemplateBuilder.setupLeadingNavigationBarButtons(rootMapTemplate, positionMode: mode, isOnRoute: isOnRoute)
+  }
+}
+
+// MARK: - Navigation speech
+
+extension CarPlayService: MWMTextToSpeechObserver {
+  func toggleNavigationSpeech() {
+    let shouldBeActive = !MWMTextToSpeech.tts().active
+    if shouldBeActive {
+      MWMTextToSpeech.setTTSEnabled(true)
+    }
+    MWMTextToSpeech.tts().active = shouldBeActive
+  }
+
+  func onTTSStatusUpdated() {
+    guard let rootMapTemplate, !rootMapTemplate.isPanningInterfaceVisible else { return }
+    MapTemplateBuilder.setupLeadingNavigationBarButtons(rootMapTemplate,
+                                                        positionMode: currentPositionMode,
+                                                        isOnRoute: isOnRoute)
   }
 }
 
@@ -1246,6 +1314,7 @@ extension CarPlayService {
   }
 
   func preparePreview(trips: [CPTrip]) {
+    guard !MWMRouter.isFollowingTrack() else { return }
     let mapTemplate = MapTemplateBuilder.buildTripPreviewTemplate(forTrips: trips)
     guard let interfaceController else { return }
     mapTemplate.mapDelegate = self
@@ -1258,7 +1327,8 @@ extension CarPlayService {
     interfaceController.popToRootTemplate(animated: false) { [weak self, weak interfaceController] success, error in
       guard let self, let interfaceController else { return }
       templateCompletion(success, error)
-      guard success, self.interfaceController === interfaceController else { return }
+      guard success, self.interfaceController === interfaceController,
+            ownsCarPlayRouting else { return }
       pushTripPreview(mapTemplate, on: interfaceController)
     }
   }
@@ -1322,7 +1392,10 @@ extension CarPlayService {
   }
 
   func showRerouteAlert(trips: [CPTrip]) {
+    let previousTrip = router?.currentTrip
     let yesAction = CPAlertAction(title: L("yes"), style: .default, handler: { [unowned self] _ in
+      guard ownsCarPlayRouting,
+            let previousTrip, router?.currentTrip === previousTrip else { return }
       router?.cancelTrip()
       updateMapTemplateUIToBase()
       preparedToPreviewTrips = trips
@@ -1380,6 +1453,7 @@ extension CarPlayService {
 
   func showRecoverRouteAlert(trip: CPTrip, isTypeCorrect: Bool) {
     let yesAction = CPAlertAction(title: L("ok"), style: .default, handler: { [unowned self] _ in
+      guard ownsCarPlayRouting, router?.previewTrip === trip else { return }
       var info = trip.userInfo as? [String: MWMRoutePoint]
 
       if let startPoint = MWMRoutePoint(lastLocationAndType: .start,
@@ -1392,6 +1466,7 @@ extension CarPlayService {
       interfaceController?.dismissTemplate(animated: true, completion: templateCompletion)
     })
     let noAction = CPAlertAction(title: L("cancel"), style: .cancel, handler: { [unowned self] _ in
+      guard ownsCarPlayRouting, router?.previewTrip === trip else { return }
       FrameworkHelper.rotateMap(0.0, animated: false)
       router?.completeRouteAndRemovePoints()
       interfaceController?.dismissTemplate(animated: true, completion: templateCompletion)
