@@ -9,11 +9,12 @@ import app.organicmaps.R;
 import app.organicmaps.sdk.Framework;
 import app.organicmaps.sdk.routing.RouteAltitudeData;
 import app.organicmaps.widget.placepage.ElevationChartUtils;
-import com.github.mikephil.charting.charts.LineChart;
+import app.organicmaps.widget.placepage.ElevationProfileChart;
 import com.github.mikephil.charting.data.Entry;
 import com.github.mikephil.charting.highlight.Highlight;
 import com.github.mikephil.charting.listener.OnChartValueSelectedListener;
 import java.util.ArrayList;
+import java.util.Collections;
 import java.util.List;
 
 public class RouteElevationChartController
@@ -21,7 +22,7 @@ public class RouteElevationChartController
   @NonNull
   private final Context mContext;
   @Nullable
-  private final LineChart mChart;
+  private final ElevationProfileChart mChart;
   @Nullable
   private final TextView mMaxAltitude;
   @Nullable
@@ -31,11 +32,16 @@ public class RouteElevationChartController
   private ElevationSelectionListener mListener;
   @Nullable
   private RouteAltitudeData mData;
+  @NonNull
+  private List<Entry> mEntries = Collections.emptyList();
+  // The exact distance of the last select(): the chart highlight keeps only its float.
+  private double mSelectedDistance = Double.NaN;
 
   public interface ElevationSelectionListener
   {
     void onElevationPointSelected(double distanceMeters);
     void onElevationPointDeselected();
+    void onElevationSelectionFinished(double distanceMeters);
   }
 
   public RouteElevationChartController(@NonNull View view)
@@ -54,7 +60,7 @@ public class RouteElevationChartController
       public void onValueSelected(Entry e, Highlight h)
       {
         if (mListener != null && mData != null)
-          mListener.onElevationPointSelected(h.getX());
+          mListener.onElevationPointSelected(toDistance(h.getX()));
       }
 
       @Override
@@ -66,6 +72,15 @@ public class RouteElevationChartController
         }
       }
     });
+    mChart.setOnSelectionFinishedListener(x -> {
+      if (mListener != null && mData != null)
+        mListener.onElevationSelectionFinished(toDistance(x));
+    });
+  }
+
+  private double toDistance(float chartX)
+  {
+    return mData == null ? chartX : ElevationChartUtils.toDistance(chartX, mSelectedDistance, mData);
   }
 
   public void setListener(@Nullable ElevationSelectionListener listener)
@@ -75,18 +90,53 @@ public class RouteElevationChartController
 
   public void clearSelection()
   {
+    mSelectedDistance = Double.NaN;
     if (mChart != null)
       mChart.highlightValue(null, false);
+  }
+
+  public void setZoomEnabled(boolean enabled)
+  {
+    if (mChart != null)
+      mChart.setScaleXEnabled(enabled);
+  }
+
+  public boolean isUserSelecting()
+  {
+    return mChart != null && mChart.isSelectionInProgress();
+  }
+
+  /** @return the selected distance, or NaN without a selection. */
+  public double getSelectedDistance()
+  {
+    return mChart == null ? Double.NaN : toDistance(mChart.getHighlightX());
+  }
+
+  /**
+   * Selects a point picked elsewhere without reporting it back to the listener. The chart reports this point with
+   * the exact distance again.
+   */
+  public void select(double distanceMeters)
+  {
+    if (mChart == null)
+      return;
+    // Only a shown chart is selected, and it is shown with data only.
+    if (mEntries.isEmpty())
+      throw new AssertionError("Selecting on an elevation chart without data");
+    mSelectedDistance = distanceMeters;
+    mChart.highlightValue(ElevationChartUtils.highlightAt(mEntries, (float) distanceMeters), false);
   }
 
   public void setData(@Nullable RouteAltitudeData data)
   {
     mData = data;
+    mSelectedDistance = Double.NaN;
     if (mChart == null)
       return;
 
     if (data == null || data.getSize() == 0)
     {
+      mEntries = Collections.emptyList();
       mChart.clear();
       if (mMaxAltitude != null)
         mMaxAltitude.setText("");
@@ -98,6 +148,7 @@ public class RouteElevationChartController
     List<Entry> values = new ArrayList<>();
     for (int i = 0; i < data.getSize(); i++)
       values.add(new Entry((float) data.getDistance(i), data.getAltitude(i), i));
+    mEntries = values;
 
     ElevationChartUtils.configureYAxisBounds(mChart, data.getMinAltitude(), data.getMaxAltitude());
     ElevationChartUtils.setChartData(mChart, values, mContext);

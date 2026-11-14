@@ -3,8 +3,10 @@ package app.organicmaps.widget.placepage;
 import static org.junit.Assert.assertEquals;
 import static org.junit.Assert.assertTrue;
 
+import app.organicmaps.sdk.routing.RouteAltitudeData;
 import app.organicmaps.widget.placepage.ElevationChartUtils.YAxisBounds;
 import com.github.mikephil.charting.data.Entry;
+import com.github.mikephil.charting.highlight.Highlight;
 import java.util.List;
 import org.junit.Test;
 
@@ -180,6 +182,81 @@ public class ElevationChartUtilsTest
     List<Entry> entries = List.of(new Entry(0f, 100f), new Entry(5e-10f, 200f));
 
     assertEquals(100f, ElevationChartUtils.interpolateY(entries, 2.5e-10f), EPS);
+  }
+
+  @Test
+  public void highlightIsClampedToTheProfileEnds()
+  {
+    List<Entry> entries = List.of(new Entry(0f, 100f), new Entry(400f, 300f), new Entry(1000f, 0f));
+
+    assertHighlight(ElevationChartUtils.highlightAt(entries, -5f), 0f, 100f);
+    assertHighlight(ElevationChartUtils.highlightAt(entries, 1200f), 1000f, 0f);
+  }
+
+  @Test
+  public void highlightInsideTheProfileIsInterpolated()
+  {
+    List<Entry> entries = List.of(new Entry(0f, 100f), new Entry(400f, 300f), new Entry(1000f, 0f));
+
+    assertHighlight(ElevationChartUtils.highlightAt(entries, 200f), 200f, 200f);
+    assertHighlight(ElevationChartUtils.highlightAt(entries, 400f), 400f, 300f);
+    assertHighlight(ElevationChartUtils.highlightAt(entries, 700f), 700f, 150f);
+  }
+
+  @Test
+  public void highlightOnASinglePointProfileStaysOnIt()
+  {
+    List<Entry> entries = List.of(new Entry(10f, 120f));
+
+    assertHighlight(ElevationChartUtils.highlightAt(entries, 0f), 10f, 120f);
+    assertHighlight(ElevationChartUtils.highlightAt(entries, 50f), 10f, 120f);
+  }
+
+  @Test
+  public void chartXOfTheSelectedPointKeepsItsExactDistance()
+  {
+    final RouteAltitudeData noPoints = profile();
+    // A gap entry, and one whose float would pass the finish of a 999999.995 m track.
+    for (double selected : new double[] {100.16474326527293, 999999.975})
+    {
+      final float x = (float) selected;
+      assertEquals(selected, ElevationChartUtils.toDistance(x, selected, noPoints), 0.0);
+      final float previous = Math.nextDown(x);
+      assertEquals(previous, ElevationChartUtils.toDistance(previous, selected, noPoints), 0.0);
+    }
+    assertEquals(999999.975, ElevationChartUtils.toDistance(1000000f, 999999.975, profile(0.0, 999999.995)), 0.0);
+    assertEquals(5.0, ElevationChartUtils.toDistance(5f, Double.NaN, noPoints), 0.0);
+    assertTrue(Double.isNaN(ElevationChartUtils.toDistance(Float.NaN, 5.0, profile(0.0, 5.0))));
+  }
+
+  @Test
+  public void chartXOfAProfilePointKeepsItsExactDistance()
+  {
+    // The float of this gap is 2.25 cm into the second section, while the core picks the first one by the exact
+    // distance. The next point shares that float too.
+    final double gap = 1000000.04;
+    final RouteAltitudeData data = profile(0.0, 400.0, gap, gap, 1000000.05, 1000100.0);
+    assertEquals(1000000.0625f, (float) gap, 0f);
+    assertEquals(gap, ElevationChartUtils.toDistance((float) gap, 400.0, data), 0.0);
+    assertEquals(gap, ElevationChartUtils.toDistance((float) gap, Double.NaN, data), 0.0);
+    assertEquals(0.0, ElevationChartUtils.toDistance(0f, 400.0, data), 0.0);
+    assertEquals(1000100.0, ElevationChartUtils.toDistance(1000100f, 400.0, data), 0.0);
+    assertEquals(999999.995, ElevationChartUtils.toDistance(1000000f, Double.NaN, profile(0.0, 999999.995)), 0.0);
+    // Points the chart did not select itself stay as they are.
+    assertEquals(200.0, ElevationChartUtils.toDistance(200f, 400.0, data), 0.0);
+    assertEquals(2000000.0, ElevationChartUtils.toDistance(2000000f, 400.0, data), 0.0);
+  }
+
+  private static RouteAltitudeData profile(double... distances)
+  {
+    return new RouteAltitudeData(distances, new int[distances.length], 0, 0, 0, 0);
+  }
+
+  private static void assertHighlight(Highlight highlight, float x, float y)
+  {
+    assertEquals(x, highlight.getX(), EPS);
+    assertEquals(y, highlight.getY(), EPS);
+    assertEquals(0, highlight.getDataSetIndex());
   }
 
   private static void assertBounds(YAxisBounds bounds, float lower, float upper)
