@@ -522,6 +522,25 @@ static MWMFollowTrackResult OnFollowTrackResult(FollowTrackResult result)
   rm.BuildRoute();
 }
 
++ (void)playNavigationNotifications
+{
+  auto * tts = [MWMTextToSpeech tts];
+  NSArray<NSString *> * turnNotifications = [self turnNotifications];
+  if ([self isOnRoute] && tts.active)
+  {
+    [tts playTurnNotifications:turnNotifications];
+    [tts playWarningSound];
+  }
+}
+
++ (void)enterTrackNavigation
+{
+  if (MWMNavigationDashboardManager.sharedManager.state == MWMNavigationDashboardStateNavigation)
+    return;
+  [self showNavigationMapControls];
+  [self playNavigationNotifications];
+}
+
 + (void)start
 {
   auto const doStart = ^{
@@ -532,8 +551,10 @@ static MWMFollowTrackResult OnFollowTrackResult(FollowTrackResult result)
       if ([MWMLocationManager lastLocation])
       {
         [[MWMRoutingManager routingManager] startRoute];
-        if (rm.IsRoutingFollowing() || rm.IsStartingFollowedTrack())
-          [[MWMMapViewControlsManager manager] onRouteStart];
+        if (rm.IsRoutingFollowing())
+          [self enterTrackNavigation];
+        else if (rm.IsStartingFollowedTrack())
+          [[MWMMapViewControlsManager manager] onRouteRebuild];
       }
       else
       {
@@ -626,14 +647,7 @@ static MWMFollowTrackResult OnFollowTrackResult(FollowTrackResult result)
 {
   if (![MWMRouter isRoutingActive])
     return;
-  auto tts = [MWMTextToSpeech tts];
-  NSArray<NSString *> * turnNotifications = [MWMRouter turnNotifications];
-  if ([MWMRouter isOnRoute] && tts.active)
-  {
-    [tts playTurnNotifications:turnNotifications];
-    [tts playWarningSound];
-  }
-
+  [MWMRouter playNavigationNotifications];
   [self updateFollowingInfo];
 }
 
@@ -641,9 +655,9 @@ static MWMFollowTrackResult OnFollowTrackResult(FollowTrackResult result)
 
 - (void)onRouteReady:(BOOL)hasWarnings
 {
-  // Completing a requested track start keeps the navigation controls already shown by Start.
   if ([MWMRouter isFollowingTrack] && [MWMRouter isOnRoute])
   {
+    [MWMRouter enterTrackNavigation];
     [self updateFollowingInfo];
     return;
   }

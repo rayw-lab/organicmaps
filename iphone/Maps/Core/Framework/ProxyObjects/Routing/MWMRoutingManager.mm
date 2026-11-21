@@ -338,13 +338,17 @@ bool IsLeftHandTraffic(storage::CountryId const & countryId)
 
 - (void)onLocationUpdate:(CLLocation *)location
 {
+  NSArray<id<MWMRoutingManagerListener>> * objects = self.listeners.allObjects;
+  // MWMRouter owns guidance for phone track sessions.
+  if (objects.count == 0 || self.rm.IsFollowingTrack())
+    return;
+
   NSMutableArray<NSString *> * turnNotifications = [NSMutableArray array];
   std::vector<std::string> notifications;
   auto announceStreets = [NSUserDefaults.standardUserDefaults boolForKey:@"UserDefaultsNeedToEnableStreetNamesTTS"];
   self.rm.GenerateNotifications(notifications, announceStreets);
   for (auto const & text : notifications)
     [turnNotifications addObject:@(text.c_str())];
-  NSArray<id<MWMRoutingManagerListener>> * objects = self.listeners.allObjects;
   for (id<MWMRoutingManagerListener> object in objects)
     [object didLocationUpdate:turnNotifications];
 }

@@ -113,14 +113,17 @@
   XCTAssertEqual(GetFramework().GetRoutingManager().RoutingSession().GetRoute(), route);
 }
 
-- (void)testCompletedTrackStartKeepsNavigationControls
+- (void)testTrackBuildEntersNavigationOnlyAfterFollowingStarts
 {
   [self createPreview];
   [self waitForPreview];
+  [MWMNavigationDashboardManager.sharedManager onRoutePlanning];
+  [[MWMRouter router] onRouteReady:NO];
+  XCTAssertEqual(MWMNavigationDashboardManager.sharedManager.state, MWMNavigationDashboardStateReady);
+
   // The test host has no renderer, so enter following before delivering its build-ready event.
+  [MWMNavigationDashboardManager.sharedManager onRoutePlanning];
   XCTAssertTrue(GetFramework().GetRoutingManager().RoutingSession().EnableFollowMode());
-  [MWMRouter showNavigationMapControls];
-  XCTAssertEqual(MWMNavigationDashboardManager.sharedManager.state, MWMNavigationDashboardStateNavigation);
   [[MWMRouter router] onRouteReady:NO];
   XCTAssertEqual(MWMNavigationDashboardManager.sharedManager.state, MWMNavigationDashboardStateNavigation);
 }
