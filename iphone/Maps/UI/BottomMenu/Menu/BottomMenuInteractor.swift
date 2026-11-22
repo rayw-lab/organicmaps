@@ -67,7 +67,17 @@ extension BottomMenuInteractor: BottomMenuInteractorProtocol {
     let mapNodeAttributes = mapsStorage.attributes(forCountry: countryId)
     // Terrain does not affect map editing eligibility.
     switch mapNodeAttributes.mapStatus {
-    case .downloading, .inQueue, .applying, .onDisk:
+    case .onDisk:
+      // The map may have finished updating while the confirmation was open.
+      if MWMNavigationDashboardManager.shared().state == .closed,
+         mapsStorage.countryForViewportCenter() == countryId,
+         FrameworkHelper.canEditMapAtViewportCenter() {
+        addPlace()
+      } else {
+        close()
+      }
+      return
+    case .downloading, .inQueue, .applying:
       break
     case .onDiskOutOfDate:
       mapsStorage.updateNode(countryId)
